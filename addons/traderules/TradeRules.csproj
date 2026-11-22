@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The custom trade rules add-on: one DLL, gamerfarm.traderules.dll, dropped in gamer.farm's plugins folder.
+       Built against the 2.0.3 plugin API (gamerFarm.dll) and nothing else; the API assembly is never shipped. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>gamerfarm.traderules</AssemblyName>
+    <RootNamespace>GamerFarm.Addons.TradeRules</RootNamespace>
+    <Version>1.0.0</Version>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GamerFarmDll Condition="'$(GamerFarmDll)' == ''">$(MSBuildThisFileDirectory)..\..\lib\gamerFarm.dll</GamerFarmDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false: gamerFarm.dll is never copied beside the add-on - the one the app loaded is the one it uses.
+         Point GamerFarmDll at the gamerFarm.dll from the official gamer.farm 2.0.3 portable release when building. -->
+    <Reference Include="gamerFarm">
+      <HintPath>$(GamerFarmDll)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="lang\*.json" LogicalName="lang.%(Filename).json" />
+  </ItemGroup>
+</Project>
