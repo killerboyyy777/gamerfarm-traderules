@@ -158,7 +158,7 @@ public sealed class TradeExpression {
 				"+" => x + y,
 				"-" => x - y,
 				"*" => x * y,
-				"/" => Math.Abs(y) < double.Epsilon ? 0 : x / y,
+				"/" => Math.Abs(y) < double.Epsilon ? null : x / y,
 				">=" => x >= y ? 1 : 0,
 				"<=" => x <= y ? 1 : 0,
 				">" => x > y ? 1 : 0,

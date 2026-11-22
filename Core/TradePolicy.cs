@@ -395,7 +395,7 @@ public static class TradePolicy {
 			return (TradeVerdict.Abstain, "the rule has no shape");
 		}
 
-		if (!SideMatches(v.Giving, give) || !SideMatches(v.Receiving, get)) {
+		if (!SideMatches(v.Giving, give, r.SwapMode) || !SideMatches(v.Receiving, get, r.SwapMode)) {
 			return (TradeVerdict.Abstain, "the offer isn't that many cards for that many foils");
 		}
 
@@ -511,13 +511,13 @@ public static class TradePolicy {
 	// -- shared bits -----------------------------------------------------------
 	private static bool Shape(Rule rule, TradeValues values) {
 		if (rule.Kind == RuleKind.FoilSwap) {
-			return rule.Give is { } g && rule.Get is { } t && SideMatches(values.Giving, g) && SideMatches(values.Receiving, t);
+			return rule.Give is { } g && rule.Get is { } t && SideMatches(values.Giving, g, rule.SwapMode) && SideMatches(values.Receiving, t, rule.SwapMode);
 		}
 
 		return AllMatch(values.Giving, rule.Match) && AllMatch(values.Receiving, rule.Match);
 	}
 
-	private static bool SideMatches(IReadOnlyList<RuleItem> side, SwapSide want) {
+	private static bool SideMatches(IReadOnlyList<RuleItem> side, SwapSide want, string mode) {
 		if (!AllMatch(side, want.Match)) {
 			return false;
 		}
@@ -526,7 +526,9 @@ public static class TradePolicy {
 			return false;
 		}
 
-		return side.Sum(static i => i.Count) >= want.Count;
+		int count = side.Sum(static i => i.Count);
+
+		return mode == "exact" ? count == want.Count : count >= want.Count;
 	}
 
 	private static bool AllMatch(IReadOnlyList<RuleItem> side, Match match) {
@@ -569,20 +571,44 @@ public static class TradePolicy {
 		(long) Math.Ceiling(worth * (1 + (Math.Max(0, marginPct) / 100.0))) + Math.Max(0, minMargin);
 
 	private static async Task<(int? Gems, string? Problem)> CardWorthAsync(Rule r, RuleItem item, TradeValues v, CancellationToken ct) {
-		ValuedItem gems = await v.GemsAsync(item, ct).ConfigureAwait(false);
-		ValuedItem wallet = await v.WalletAsync(item, true, r.MinSales, r.MaxAgeHours, r.UndercutPct, "unknown", ct).ConfigureAwait(false);
-		long sack = await v.SackAsync(ct).ConfigureAwait(false) ?? 0;
-		int? fromWallet = (wallet.WalletCents is int cents) && (sack > 0) ? (int) ((long) cents * 1000 / sack) : null;
-
 		if (r.Worth == "wallet") {
-			return fromWallet is int w ? (w, null)
-				: r.Fallback == "gems" && gems.Gems is int g ? (g, null)
-				: (null, wallet.Problem ?? "the card's market value can't be turned into gems");
+			ValuedItem wallet = await v.WalletAsync(item, true, r.MinSales, r.MaxAgeHours, r.UndercutPct, "unknown", ct).ConfigureAwait(false);
+			int? fromWallet = null;
+
+			if (wallet.WalletCents is int cents && await v.SackAsync(ct).ConfigureAwait(false) is int sack && sack > 0) {
+				fromWallet = (int) ((long) cents * 1000 / sack);
+			}
+
+			if (fromWallet is int w) {
+				return (w, null);
+			}
+
+			if (r.Fallback == "gems") {
+				ValuedItem gems = await v.GemsAsync(item, ct).ConfigureAwait(false);
+
+				if (gems.Gems is int g) {
+					return (g, null);
+				}
+			}
+
+			return (null, wallet.Problem ?? "the card's market value can't be turned into gems");
 		}
 
-		return gems.Gems is int value ? (value, null)
-			: r.Fallback == "wallet" && fromWallet is int f ? (f, null)
-			: (null, gems.Problem ?? "the card's gem value isn't known");
+		ValuedItem primary = await v.GemsAsync(item, ct).ConfigureAwait(false);
+
+		if (primary.Gems is int value) {
+			return (value, null);
+		}
+
+		if (r.Fallback == "wallet") {
+			ValuedItem wallet = await v.WalletAsync(item, true, r.MinSales, r.MaxAgeHours, r.UndercutPct, "unknown", ct).ConfigureAwait(false);
+
+			if (wallet.WalletCents is int cents && await v.SackAsync(ct).ConfigureAwait(false) is int sack && sack > 0) {
+				return ((int) ((long) cents * 1000 / sack), null);
+			}
+		}
+
+		return (null, primary.Problem ?? "the card's gem value isn't known");
 	}
 
 	private static async Task<long?> PackWorthAsync(Rule r, uint app, TradeValues v, CancellationToken ct) {

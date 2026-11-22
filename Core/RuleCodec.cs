@@ -128,6 +128,16 @@ public static class RuleCodec {
 			return null;
 		}
 
+		int problemsBefore = problems.Count;
+		Partners partners = PartnersOf(e, index, problems);
+		Match match = MatchOf(e, index, problems);
+		PayIn? payIn = PayInOf(e, index, problems);
+
+		// A broken filter must never turn into Match.Any or an unrestricted payment side.
+		if (problems.Count != problemsBefore) {
+			return null;
+		}
+
 		Rule r = new() {
 			Id = id,
 			Kind = kind,
@@ -135,12 +145,12 @@ public static class RuleCodec {
 			Enabled = Bool(e, "enabled") ?? true,
 			Priority = Int(e, "priority") ?? 100,
 			Note = Str(e, "note") ?? "",
-			Partners = PartnersOf(e),
-			Match = MatchOf(e, index, problems),
-			PayIn = PayInOf(e, index, problems)
+			Partners = partners,
+			Match = match,
+			PayIn = payIn
 		};
 
-		return kind switch {
+		Rule? parsed = kind switch {
 			RuleKind.CardGems => CardGems(e, r, index, problems),
 			RuleKind.SetSizeGems => SetSizeGems(e, r, index, problems),
 			RuleKind.ItemThreshold => ItemThreshold(e, r, index, problems),
@@ -150,6 +160,8 @@ public static class RuleCodec {
 			RuleKind.Expression => ExpressionRule(e, r, index, problems),
 			RuleKind.ValueRatio or _ => ValueRatio(e, r, index, problems)
 		};
+
+		return problems.Count == problemsBefore ? parsed : null;
 	}
 
 	private static Rule? CardGems(JsonElement e, Rule r, int index, List<string> problems) {
@@ -415,9 +427,22 @@ public static class RuleCodec {
 		};
 	}
 
-	private static Partners PartnersOf(JsonElement e) {
-		if (!e.TryGetProperty("when", out JsonElement when) || (when.ValueKind != JsonValueKind.Object)
-			|| !when.TryGetProperty("partners", out JsonElement p) || (p.ValueKind != JsonValueKind.Object)) {
+	private static Partners PartnersOf(JsonElement e, int index, List<string> problems) {
+		if (!e.TryGetProperty("when", out JsonElement when)) {
+			return Partners.Anyone;
+		}
+
+		if (when.ValueKind != JsonValueKind.Object) {
+			problems.Add($"rule {index}: when must be an object");
+			return Partners.Anyone;
+		}
+
+		if (!when.TryGetProperty("partners", out JsonElement p)) {
+			return Partners.Anyone;
+		}
+
+		if (p.ValueKind != JsonValueKind.Object || !ListFieldValid(p, "allow") || !ListFieldValid(p, "deny")) {
+			problems.Add($"rule {index}: when.partners must be an object with string allow/deny lists");
 			return Partners.Anyone;
 		}
 
@@ -434,6 +459,11 @@ public static class RuleCodec {
 			return null;
 		}
 
+		if (!ListFieldValid(p, "kinds")) {
+			problems.Add($"rule {index}: payIn.kinds must be a string or an array of strings");
+			return null;
+		}
+
 		List<SpareKind> kinds = [];
 
 		foreach (string name in Lines(p, "kinds")) {
@@ -445,7 +475,19 @@ public static class RuleCodec {
 			kinds.Add(kind);
 		}
 
-		return new PayIn(kinds, Bool(p, "only") ?? false);
+		if (p.TryGetProperty("only", out JsonElement onlyElement) && onlyElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) {
+			problems.Add($"rule {index}: payIn.only must be true or false");
+			return null;
+		}
+
+		bool only = Bool(p, "only") ?? false;
+
+		if (only && kinds.Count == 0) {
+			problems.Add($"rule {index}: payIn.kinds must not be empty when only is true");
+			return null;
+		}
+
+		return new PayIn(kinds, only);
 	}
 
 	private static Match MatchOf(JsonElement e, int index, List<string> problems) {
@@ -455,6 +497,11 @@ public static class RuleCodec {
 
 		if (m.ValueKind != JsonValueKind.Object) {
 			problems.Add($"rule {index}: match must be an object");
+			return Match.Any;
+		}
+
+		if (!ListFieldValid(m, "kinds") || !ListFieldValid(m, "apps") || !ListFieldValid(m, "hashes") || !ListFieldValid(m, "names")) {
+			problems.Add($"rule {index}: match kinds, apps, hashes and names must be strings or arrays of strings");
 			return Match.Any;
 		}
 
@@ -479,20 +526,43 @@ public static class RuleCodec {
 			}
 		}
 
-		List<string> hashes = [.. Lines(m, "hashes").Take(MaxNames)];
-		List<string> names = [.. Lines(m, "names").Take(MaxNames)];
+		List<string> allHashes = Lines(m, "hashes");
+		List<string> allNames = Lines(m, "names");
 
-		if (hashes.Count == MaxNames) {
-			problems.Add($"rule {index}: only the first {MaxNames} hashes are used");
+		if (allHashes.Count > MaxNames || allNames.Count > MaxNames) {
+			problems.Add($"rule {index}: match hashes and names may contain at most {MaxNames} entries each");
+			return Match.Any;
 		}
 
-		if (names.Count == MaxNames) {
-			problems.Add($"rule {index}: only the first {MaxNames} names are used");
+		bool? foil = null;
+
+		if (m.TryGetProperty("foil", out JsonElement f)) {
+			if (f.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) {
+				problems.Add($"rule {index}: match.foil must be true or false");
+				return Match.Any;
+			}
+
+			foil = f.GetBoolean();
 		}
 
-		bool? foil = m.TryGetProperty("foil", out JsonElement f) && (f.ValueKind is JsonValueKind.True or JsonValueKind.False) ? f.GetBoolean() : null;
+		int? min = Int(m, "minItems"), max = Int(m, "maxItems");
 
-		return new Match(kinds, apps, hashes, names, foil, Int(m, "minItems"), Int(m, "maxItems"));
+		if ((m.TryGetProperty("minItems", out _) && min is null) || (m.TryGetProperty("maxItems", out _) && max is null)
+			|| min is < 0 || max is < 0 || (min is int minCount && max is int maxCount && minCount > maxCount)) {
+			problems.Add($"rule {index}: match item counts must be non-negative integers with minItems no greater than maxItems");
+			return Match.Any;
+		}
+
+		return new Match(kinds, apps, allHashes, allNames, foil, min, max);
+	}
+
+	private static bool ListFieldValid(JsonElement e, string name) {
+		if (!e.TryGetProperty(name, out JsonElement value)) {
+			return true;
+		}
+
+		return value.ValueKind == JsonValueKind.String
+			|| (value.ValueKind == JsonValueKind.Array && value.EnumerateArray().All(static item => item.ValueKind == JsonValueKind.String));
 	}
 
 	private static List<string> Lines(JsonElement e, string name) {
