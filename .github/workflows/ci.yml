@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download official gamer.farm 2.0.3 reference DLL
+        shell: pwsh
+        run: |
+          $asset = 'gamer.farm-v2.0.3-portable.zip'
+          $url = "https://github.com/VisaHolder/gamerfarm/releases/download/v2.0.3/$asset"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\gf203.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\gf203.zip" -DestinationPath "$env:RUNNER_TEMP\gf203" -Force
+          $dll = Get-ChildItem -Path "$env:RUNNER_TEMP\gf203" -Filter gamerFarm.dll -Recurse -File | Select-Object -First 1
+          if (-not $dll) { throw "gamerFarm.dll not found in the 2.0.3 portable zip" }
+          Copy-Item $dll.FullName "$env:RUNNER_TEMP\gamerFarm.dll"
+
+      - name: Build add-on
+        shell: pwsh
+        run: |
+          dotnet build addons/traderules/TradeRules.csproj -c Release `
+            -p:GamerFarmDll="$env:RUNNER_TEMP\gamerFarm.dll"
+          $out = "addons/traderules/bin/Release/net10.0/gamerfarm.traderules.dll"
+          if (-not (Test-Path $out)) { throw "Expected output DLL missing: $out" }
+          if (Test-Path "addons/traderules/bin/Release/net10.0/gamerFarm.dll") {
+            throw "gamerFarm.dll must not be copied into the add-on output"
+          }
+          (Get-FileHash $out -Algorithm SHA256).Hash
