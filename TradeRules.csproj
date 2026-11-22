@@ -12,7 +12,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <GamerFarmDll Condition="'$(GamerFarmDll)' == ''">$(MSBuildThisFileDirectory)..\..\lib\gamerFarm.dll</GamerFarmDll>
+    <GamerFarmDll Condition="'$(GamerFarmDll)' == ''">$(MSBuildThisFileDirectory)lib\gamerFarm.dll</GamerFarmDll>
   </PropertyGroup>
 
   <ItemGroup>

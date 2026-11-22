@@ -31,11 +31,11 @@ jobs:
       - name: Build add-on
         shell: pwsh
         run: |
-          dotnet build addons/traderules/TradeRules.csproj -c Release `
+          dotnet build TradeRules.csproj -c Release `
             -p:GamerFarmDll="$env:RUNNER_TEMP\gamerFarm.dll"
-          $out = "addons/traderules/bin/Release/net10.0/gamerfarm.traderules.dll"
+          $out = "bin/Release/net10.0/gamerfarm.traderules.dll"
           if (-not (Test-Path $out)) { throw "Expected output DLL missing: $out" }
-          if (Test-Path "addons/traderules/bin/Release/net10.0/gamerFarm.dll") {
+          if (Test-Path "bin/Release/net10.0/gamerFarm.dll") {
             throw "gamerFarm.dll must not be copied into the add-on output"
           }
           (Get-FileHash $out -Algorithm SHA256).Hash
