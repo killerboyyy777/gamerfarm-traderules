@@ -2,7 +2,7 @@ name: Auto-release on gamer.farm update
 
 # GitHub Actions cannot be triggered by a release in another repository, so this polls
 # VisaHolder/gamerfarm once a day. When a new upstream version appears, it rebuilds the
-# add-on against that version's gamerFarm.dll and refreshes the single v1.0.0 release.
+# add-on against that version's gamerFarm.dll and refreshes our latest release.
 # The release keeps one asset (gamerfarm.traderules.dll) so its download URL stays stable.
 # Idempotency: a machine-readable marker in the release notes records the last version built.
 
@@ -30,10 +30,17 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      TAG: v1.0.0
       FORCE: ${{ inputs.force == true }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Find our latest release to refresh
+        shell: pwsh
+        run: |
+          $tag = (gh release view --repo $env:REPO --json tagName --jq .tagName)
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tag)) { throw 'No release found to refresh' }
+          "TAG=$tag" >> $env:GITHUB_ENV
+          "Refreshing release $tag"
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
