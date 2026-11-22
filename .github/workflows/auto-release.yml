@@ -1,0 +1,124 @@
+name: Auto-release on gamer.farm update
+
+# GitHub Actions cannot be triggered by a release in another repository, so this polls
+# VisaHolder/gamerfarm once a day. When a new upstream version appears, it rebuilds the
+# add-on against that version's gamerFarm.dll and refreshes the single v1.0.0 release.
+# The release keeps one asset (gamerfarm.traderules.dll) so its download URL stays stable.
+# Idempotency: a machine-readable marker in the release notes records the last version built.
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and republish even if the upstream version has not changed
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gamerfarm-auto-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: v1.0.0
+      FORCE: ${{ inputs.force == true }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Find the latest upstream gamer.farm release
+        id: upstream
+        shell: pwsh
+        run: |
+          $rel = gh api repos/VisaHolder/gamerfarm/releases/latest | ConvertFrom-Json
+          if (-not $rel -or -not $rel.tag_name) { throw 'The upstream release answer had no tag_name' }
+          $version = ($rel.tag_name -replace '^v', '').Trim()
+          if ($version.Length -eq 0) { throw "Could not read a version from tag $($rel.tag_name)" }
+          $zip = $rel.assets | Where-Object { $_.name -match 'portable.*\.zip$' } | Select-Object -First 1
+          if (-not $zip) { throw "Upstream release $($rel.tag_name) has no portable zip asset" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$($rel.tag_name)" >> $env:GITHUB_OUTPUT
+          "zip=$($zip.browser_download_url)" >> $env:GITHUB_OUTPUT
+          Write-Host "Latest upstream release: $($rel.tag_name) ($version)"
+
+      - name: Check what this release was last built against
+        id: check
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          $body = (gh release view $env:TAG --repo $env:REPO --json body --jq .body) -join "`n"
+          $m = [regex]::Match($body, '<!--\s*gamerfarm-version:\s*([0-9][0-9A-Za-z.\-]*)\s*-->')
+          $built = if ($m.Success) { $m.Groups[1].Value } else { '' }
+          $force = $env:FORCE -eq 'true'
+          if (($built -eq $env:VERSION) -and -not $force) {
+            "skip=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Already built against gamer.farm $($env:VERSION) - nothing to do."
+          } else {
+            "skip=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Upstream changed from '$built' to '$($env:VERSION)' - rebuilding."
+          }
+
+      - name: Download the upstream portable release
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          ZIP: ${{ steps.upstream.outputs.zip }}
+        run: |
+          Invoke-WebRequest -Uri $env:ZIP -OutFile "$env:RUNNER_TEMP\gf.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\gf.zip" -DestinationPath "$env:RUNNER_TEMP\gf" -Force
+          $dll = Get-ChildItem -Path "$env:RUNNER_TEMP\gf" -Filter gamerFarm.dll -Recurse -File | Select-Object -First 1
+          if (-not $dll) { throw 'gamerFarm.dll was not found in the upstream portable zip' }
+          Copy-Item $dll.FullName "$env:RUNNER_TEMP\gamerFarm.dll"
+          Write-Host "Using reference DLL from $($dll.FullName)"
+
+      - name: Build and verify the add-on
+        id: build
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          dotnet build TradeRules.csproj -c Release -p:GamerFarmDll="$env:RUNNER_TEMP\gamerFarm.dll"
+          if ($LASTEXITCODE -ne 0) { throw 'The add-on build failed' }
+          $out = "bin/Release/net10.0/gamerfarm.traderules.dll"
+          if (-not (Test-Path $out)) { throw "Expected output DLL missing: $out" }
+          if (Test-Path "bin/Release/net10.0/gamerFarm.dll") {
+            throw 'gamerFarm.dll must not be copied into the add-on output'
+          }
+          $sha = (Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA-256: $sha"
+
+      - name: Refresh the release with the rebuilt DLL
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+          SHA: ${{ steps.build.outputs.sha }}
+        run: |
+          $template = Get-Content -Raw release-notes.template.md
+          if (-not $template) { throw 'release-notes.template.md is missing or empty' }
+          $notes = $template.Replace('{{GAMERFARM_VERSION}}', $env:VERSION).Replace('{{SHA256}}', $env:SHA)
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [System.IO.File]::WriteAllText($notesFile, $notes, (New-Object System.Text.UTF8Encoding($false)))
+
+          gh release upload $env:TAG "bin/Release/net10.0/gamerfarm.traderules.dll" --repo $env:REPO --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Uploading the rebuilt DLL failed' }
+          gh release edit $env:TAG --repo $env:REPO --notes-file $notesFile --title "Custom trade rules for gamer.farm $($env:VERSION)"
+          if ($LASTEXITCODE -ne 0) { throw 'Updating the release notes failed' }
+
+          $summary = "Auto-release: rebuilt against gamer.farm $($env:VERSION). SHA-256: $($env:SHA)."
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
